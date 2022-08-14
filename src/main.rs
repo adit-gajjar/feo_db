@@ -10,7 +10,7 @@ use std::io::prelude::*;
 use serde_json::json;
 use std::path::Path;
 
-const MAX_SEGMENT_SIZE: u64 = 1000 * 64;
+const MAX_SEGMENT_SIZE: u64 = 1000;
 struct Config {
     main_segment_path: String,
 }
@@ -53,7 +53,7 @@ fn create_index_from_segment(segment_file_path: String) -> Result<(u64, BTreeMap
         segment_file.seek(SeekFrom::Start(byte_index))?;
         bytes_read = segment_file.read(&mut buffer[..])?;
     };
-
+    print!("The main segment size is : {}\n", byte_index);
     Ok((byte_index, index))
 }
 
@@ -63,9 +63,9 @@ impl DB {
         // TODO: throw error if value is too large.
         let size_in_bytes = value.len();
         // store record in new segment.
-        // if (size_in_bytes as u64) + self.main_segment_size > 1000 * 64 {
-        //     self.new_main_segment()?;
-        // }
+        if (size_in_bytes as u64) + self.main_segment_size > MAX_SEGMENT_SIZE {
+            self.new_main_segment()?;
+        }
 
         let mut main_segment = OpenOptions::new()
         .write(true)
@@ -145,6 +145,7 @@ impl DB {
                 segments: Vec::new()
             });
         }
+        
         Ok(DB {
             index: BTreeMap::new(),
             config: Config {
@@ -157,11 +158,24 @@ impl DB {
 
 }
 
+fn get_json_data(id: u64) -> Value {
+    json!({
+        ""
+        "name": "John Doe",
+        "age": 43,
+        "phones": [
+            "+44 1234567",
+            "+44 2345678"
+        ]
+    });
+}
+
 fn main() -> Result<(), Error> {
     let mut db = DB::new()?;
 
     let sample_input1 = r#"
         {
+            "id": 1,
             "name": "John Doe",
             "age": 47,
             "phones": [
