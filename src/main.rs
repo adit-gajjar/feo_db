@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::vec::Vec;
-use std::fs::{File, OpenOptions, copy};
+use std::fs::{File, OpenOptions, copy, remove_file};
 use std::io::{Write, Error, SeekFrom};
 use serde_json::Value;
 use std::mem;
@@ -9,6 +9,7 @@ use std::fmt;
 use std::io::prelude::*;
 use serde_json::json;
 use std::path::Path;
+use std::time::SystemTime;
 
 const MAX_SEGMENT_SIZE: u64 = 1000;
 struct Config {
@@ -18,7 +19,8 @@ struct Config {
 struct Segment {
     segment_path: String,
     index: BTreeMap<u64, u64>,
-    segment_size: u64
+    segment_size: u64,
+    disk_time: SystemTime
 }
 
 struct DB {
@@ -121,13 +123,15 @@ impl DB {
         let new_segment_struct = Segment {
             segment_path: String::from(new_segment_file_name),
             index: self.index.clone(),
-            segment_size: self.main_segment_size
+            segment_size: self.main_segment_size,
+            disk_time: SystemTime::now()
         };
         // add new segment struct to vec
         self.segments.push(new_segment_struct);
         // clear current index and main_segment.
         self.index.clear();
         File::create(&(self.config.main_segment_path))?;
+
         Ok(())
     }
 
@@ -142,7 +146,7 @@ impl DB {
                     main_segment_path: String::from("main_segment.db")
                 },
                 main_segment_size: main_segment_size,
-                segments: Vec::new()
+                segments: Vec::new(),
             });
         }
         
@@ -152,22 +156,64 @@ impl DB {
                 main_segment_path: String::from("main_segment.db")
             },
             main_segment_size: 0,
-            segments: Vec::new()
+            segments: Vec::new(),
         })
+    }
+
+    // Size Tiered Compaction Strategy (STCS)
+    // removes duplicate keys.
+    fn compact_segment(&self, segment: &mut Segment) -> Result<(), Error> {
+        // open of file to read the json values.
+        let mut curr_segment = File::open(&(self.config.main_segment_path))?;
+        let mut bytes_written: u64 = 0;
+        // temp file to write to.
+        let new_segment_file_name = "temp_compaction_segment.db";
+        File::create(&new_segment_file_name)?;
+        let mut new_segment_file = OpenOptions::new()
+            .write(true)
+            .append(true)
+            .open(&(self.config.main_segment_path))
+            .unwrap();
+        let mut byte_index_updates = Vec::new();
+        for (key, value) in segment.index.iter() {
+            curr_segment.seek(SeekFrom::Start(*value + (mem::size_of::<u64>() as u64)))?;
+            let mut buffer = [0; mem::size_of::<u64>()];
+            // read the document size
+            curr_segment.read(&mut buffer[..])?;
+            let size_of_json = u64::from_ne_bytes(buffer);
+            // read the json value
+            let mut value_buffer = vec![0_u8; size_of_json as usize];
+            curr_segment.read(&mut value_buffer)?;
+            // write to new segment
+            new_segment_file.write(&key.to_ne_bytes())?;
+            new_segment_file.write(&bytes_written.to_ne_bytes())?;
+            new_segment_file.write(&value_buffer)?;
+            // update index
+            byte_index_updates.push((*key, bytes_written));
+            bytes_written += (2 * mem::size_of::<u64> as u64) + size_of_json;
+        }
+        // update indexes
+        for (key, byte_index) in byte_index_updates.iter() {
+            segment.index.insert(*key, *byte_index);
+        }
+        // move compacted data from temp file to main file.
+        copy(new_segment_file_name, segment.segment_path.clone())?;
+        remove_file(new_segment_file_name)?;
+
+        Ok(())
     }
 
 }
 
 fn get_json_data(id: u64) -> Value {
     json!({
-        ""
         "name": "John Doe",
-        "age": 43,
+        "id": id,
         "phones": [
             "+44 1234567",
             "+44 2345678"
         ]
-    });
+    })
 }
 
 fn main() -> Result<(), Error> {
