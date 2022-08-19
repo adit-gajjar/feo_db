@@ -61,13 +61,12 @@ fn create_index_from_segment(segment_file_path: String) -> Result<(u64, BTreeMap
         segment_file.seek(SeekFrom::Start(byte_index))?;
         bytes_read = segment_file.read(&mut buffer[..])?;
     };
-    
+
     Ok((byte_index, index))
 }
 
 impl DB {
     fn insert(&mut self, key: u64, value: String) -> Result<(), Error> {
-        // TODO: throw error if value is too large.
         let value_len = value.len() as u64;
         print!("value_len: {}\n", value_len);
         if (value_len + self.mem_table_size > MEM_TABLE_MAX_SIZE) {
@@ -119,29 +118,44 @@ impl DB {
             return Ok(json_value);
         }
 
-        // look up byte index in index
+        // look up byte index in index in main segment
         let byte_index = self.index.get(key);
 
         if let Some(byte_index) = byte_index {
-            // file seek and return value
-            let mut f = File::open(&(self.config.main_segment_path))?;
-            let mut buffer = [0; mem::size_of::<u64>()];
+            let json_value = self.read_document_from_segment(&self.config.main_segment_path, *byte_index)?;
+            return Ok(json_value);
+        }
 
-            f.seek(SeekFrom::Start(byte_index + 8))?;
-            // read in JSON document size
-            f.read(&mut buffer[..])?;
-            let size_of_json = u64::from_ne_bytes(buffer);
-            // read in JSON document
-            let mut value_buffer = vec![0_u8; size_of_json as usize];
-            f.read(&mut value_buffer)?;
-            let stringified_json = str::from_utf8(&value_buffer);
-            // return JSON value
-            if let Ok(stringified_json) = stringified_json {
-                let json_value : Value = serde_json::from_str(stringified_json)?;
-                // for debug.
-                print!("{}", json_value);
+        for segment in self.segments.iter() {
+            let byte_index = self.index.get(key);
+            if let Some(byte_index) = byte_index {
+                let json_value = self.read_document_from_segment(&segment.segment_path, *byte_index)?;
                 return Ok(json_value);
             }
+        }
+
+        return Ok(json!(null));
+    }
+
+    fn read_document_from_segment(&self, segment_path: &String, byte_index: u64) -> Result<Value, Error> {
+        // file seek and return value
+        let mut segment_file = File::open(segment_path)?;
+        let mut buffer = [0; mem::size_of::<u64>()];
+
+        segment_file.seek(SeekFrom::Start(byte_index + 8))?;
+        // read in JSON document size
+        segment_file.read(&mut buffer[..])?;
+        let size_of_json = u64::from_ne_bytes(buffer);
+        // read in JSON document
+        let mut value_buffer = vec![0_u8; size_of_json as usize];
+        segment_file.read(&mut value_buffer)?;
+        let stringified_json = str::from_utf8(&value_buffer);
+        // return JSON value
+        if let Ok(stringified_json) = stringified_json {
+            let json_value : Value = serde_json::from_str(stringified_json)?;
+            // for debug.
+            print!("{}", json_value);
+            return Ok(json_value);
         }
 
         return Ok(json!(null));
