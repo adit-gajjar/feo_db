@@ -10,10 +10,14 @@ use std::io::prelude::*;
 use serde_json::json;
 use std::path::Path;
 use std::time::SystemTime;
+use std::io::stdin;
 
-const MAX_SEGMENT_SIZE: u64 = 1000;
+const MAX_SEGMENT_SIZE: u64 = 10000 * 64;
+const MEM_TABLE_MAX_SIZE: u64 = 1000;
+
 struct Config {
     main_segment_path: String,
+    mem_table_max_size: u64
 }
 
 struct Segment {
@@ -25,6 +29,8 @@ struct Segment {
 
 struct DB {
     // key to byte index
+    mem_table: BTreeMap<u64, String>,
+    mem_table_size: u64,
     index: BTreeMap<u64, u64>,
     config: Config,
     main_segment_size: u64,
@@ -55,37 +61,64 @@ fn create_index_from_segment(segment_file_path: String) -> Result<(u64, BTreeMap
         segment_file.seek(SeekFrom::Start(byte_index))?;
         bytes_read = segment_file.read(&mut buffer[..])?;
     };
-    print!("The main segment size is : {}\n", byte_index);
+    
     Ok((byte_index, index))
 }
 
 impl DB {
     fn insert(&mut self, key: u64, value: String) -> Result<(), Error> {
-        // check whether their is enough space.
         // TODO: throw error if value is too large.
-        let size_in_bytes = value.len();
-        // store record in new segment.
-        if (size_in_bytes as u64) + self.main_segment_size > MAX_SEGMENT_SIZE {
-            self.new_main_segment()?;
+        let value_len = value.len() as u64;
+        print!("value_len: {}\n", value_len);
+        if (value_len + self.mem_table_size > MEM_TABLE_MAX_SIZE) {
+            self.write_mem_table_to_segment()?;
         }
+        self.mem_table.insert(key, value);
+        self.mem_table_size += value_len;
+        Ok(())
+    }
 
+    fn write_mem_table_to_segment(&mut self) -> Result<(), Error> {
+        // for each key in the mem_table write it to the main segment.
+        // update the index of that segment as well.
         let mut main_segment = OpenOptions::new()
         .write(true)
         .append(true)
         .open(&(self.config.main_segment_path))
         .unwrap();
-        main_segment.write(&key.to_ne_bytes())?;
-        main_segment.write(&size_in_bytes.to_ne_bytes())?;
-        write!(main_segment, "{}",  value)?;
+        let mut bytes_written: u64 = 0;
+        let mut byte_index_updates = Vec::new();
+        main_segment.seek(SeekFrom::Start(self.main_segment_size))?;
+        // TODO: batch all these writes and write it as one chunk
+        for (key, value) in self.mem_table.iter() {
+            // write to new segment
+            let size_in_bytes = value.len() as u64;
+            main_segment.write(&key.to_ne_bytes())?;
+            main_segment.write(&size_in_bytes.to_ne_bytes())?;
+            write!(main_segment, "{}",  value)?;
+            // update index
+            byte_index_updates.push((*key, bytes_written));
+            self.main_segment_size += (2 * mem::size_of::<u64> as u64) + size_in_bytes;
+            byte_index_updates.push((*key, self.main_segment_size));
+        }
 
-        // update the index
-        self.index.insert(key, self.main_segment_size);
-        self.main_segment_size += 16 + (size_in_bytes as u64);
+        for (key, byte_index) in byte_index_updates.iter() {
+            self.index.insert(*key, *byte_index);
+        }
 
+        self.mem_table.clear();
+        self.mem_table_size = 0;
         Ok(())
     }
 
     fn find_by_id(&self, key:&u64) -> Result<Value, Error> {
+        // first check mem_table
+        let value = self.mem_table.get(key);
+        if let Some(value) = value {
+            let json_value = serde_json::from_str(value)?;
+            return Ok(json_value);
+        }
+
         // look up byte index in index
         let byte_index = self.index.get(key);
 
@@ -142,26 +175,31 @@ impl DB {
             let (main_segment_size, index) = create_index_from_segment(String::from("main_segment.db"))?;
             return Ok(DB {
                 index: index,
+                mem_table: BTreeMap::new(),
                 config: Config {
-                    main_segment_path: String::from("main_segment.db")
+                    main_segment_path: String::from("main_segment.db"),
+                    mem_table_max_size: MEM_TABLE_MAX_SIZE
                 },
                 main_segment_size: main_segment_size,
+                mem_table_size: 0,
                 segments: Vec::new(),
             });
         }
         
         Ok(DB {
             index: BTreeMap::new(),
+            mem_table: BTreeMap::new(),
             config: Config {
-                main_segment_path: String::from("main_segment.db")
+                main_segment_path: String::from("main_segment.db"),
+                mem_table_max_size: MEM_TABLE_MAX_SIZE
             },
             main_segment_size: 0,
+            mem_table_size: 0,
             segments: Vec::new(),
         })
     }
 
     // Size Tiered Compaction Strategy (STCS)
-    // removes duplicate keys.
     fn compact_segment(&self, segment: &mut Segment) -> Result<(), Error> {
         // open of file to read the json values.
         let mut curr_segment = File::open(&(self.config.main_segment_path))?;
@@ -211,7 +249,8 @@ fn get_json_data(id: u64) -> Value {
         "id": id,
         "phones": [
             "+44 1234567",
-            "+44 2345678"
+            "+44 2345678",
+            "+44 2345678",
         ]
     })
 }
@@ -219,19 +258,10 @@ fn get_json_data(id: u64) -> Value {
 fn main() -> Result<(), Error> {
     let mut db = DB::new()?;
 
-    let sample_input1 = r#"
-        {
-            "id": 1,
-            "name": "John Doe",
-            "age": 47,
-            "phones": [
-                "+44 1234567",
-                "+44 2345678"
-            ]
-        }"#;
-
-    db.insert(123, String::from(sample_input1));
-    db.find_by_id(&123);
-
     Ok(())
 }
+
+
+
+
+
