@@ -8,11 +8,12 @@ use std::str;
 use std::io::prelude::*;
 use serde_json::json;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime};
+use uuid::Uuid;
 
 
-const MAX_SEGMENT_SIZE: u64 = 100 * 64;
-const MEM_TABLE_MAX_SIZE: u64 = 1000;
+const MAX_SEGMENT_SIZE: u64 = 100000 * 64;
+const MEM_TABLE_MAX_SIZE: u64 = 1000 * 64;
 
 struct Config {
     main_segment_path: String,
@@ -192,8 +193,8 @@ impl DB {
 
     fn new_main_segment(&mut self) -> Result<(), Error> {
         // clone current main_segment into new file.
-        let time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        let new_segment_file_name = format!("./segments/segment_{}.db", time.as_secs());
+        let id = Uuid::new_v4();
+        let new_segment_file_name = format!("./segments/segment_{}.db", id);
         File::create(&new_segment_file_name)?;
         copy(&(self.config.main_segment_path), &new_segment_file_name)?;
         // create new Segment Struct

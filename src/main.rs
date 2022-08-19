@@ -18,6 +18,15 @@ fn get_json_data(id: u64) -> Value {
 fn main() -> Result<(), Error> {
     let mut db = DB::new()?;
 
+    for i in 1..1001 {
+        db.insert(i, get_json_data(i).to_string())?;
+    }
+
+    for i in 1001..1 {
+        let json_val = db.find_by_id(&i)?;
+    }
+
+
     Ok(())
 }
 
