@@ -5,12 +5,10 @@ use std::io::{Write, Error, SeekFrom};
 use serde_json::Value;
 use std::mem;
 use std::str;
-use std::fmt;
 use std::io::prelude::*;
 use serde_json::json;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::io::stdin;
 
 
 const MAX_SEGMENT_SIZE: u64 = 100 * 64;
@@ -90,13 +88,13 @@ impl DB {
         }
         // recover the rest of the segments.
         db.deserialize_segments()?;
-        
+
         Ok(db)
     }
 
     pub fn insert(&mut self, key: u64, value: String) -> Result<(), Error> {
         let value_len = value.len() as u64;
-        if (value_len + self.mem_table_size > MEM_TABLE_MAX_SIZE) {
+        if value_len + self.mem_table_size > MEM_TABLE_MAX_SIZE {
             self.write_mem_table_to_segment()?;
         }
         self.mem_table.insert(key, value);
@@ -122,20 +120,20 @@ impl DB {
 
         // search in reverse as last added segment has more recent data.
         for segment in self.segments.iter().rev() {
-            let byte_index = self.index.get(key);
+            let byte_index = segment.index.get(key);
             if let Some(byte_index) = byte_index {
                 let json_value = self.read_document_from_segment(&segment.segment_path, *byte_index)?;
                 return Ok(json_value);
             }
         }
 
-        return Ok(json!(null));
+        Ok(json!(null))
     }
 
     fn write_mem_table_to_segment(&mut self) -> Result<(), Error> {
         // for each key in the mem_table write it to the main segment.
         // update the index of that segment as well.
-        if (self.mem_table_size + self.main_segment_size > MAX_SEGMENT_SIZE) {
+        if self.mem_table_size + self.main_segment_size > MAX_SEGMENT_SIZE {
             self.new_main_segment()?;
         }
 
@@ -144,7 +142,6 @@ impl DB {
         .append(true)
         .open(&(self.config.main_segment_path))
         .unwrap();
-        let mut bytes_written: u64 = 0;
         let mut byte_index_updates = Vec::new();
         main_segment.seek(SeekFrom::Start(self.main_segment_size))?;
         // TODO: batch all these writes and write it as one chunk
@@ -155,7 +152,7 @@ impl DB {
             main_segment.write(&size_in_bytes.to_ne_bytes())?;
             write!(main_segment, "{}",  value)?;
             // update index
-            byte_index_updates.push((*key, bytes_written));
+            byte_index_updates.push((*key, self.main_segment_size));
             self.main_segment_size += (2 * mem::size_of::<u64> as u64) + size_in_bytes;
             byte_index_updates.push((*key, self.main_segment_size));
         }
@@ -197,7 +194,7 @@ impl DB {
         // clone current main_segment into new file.
         let time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let new_segment_file_name = format!("./segments/segment_{}.db", time.as_secs());
-        let mut new_segment_file = File::create(&new_segment_file_name)?;
+        File::create(&new_segment_file_name)?;
         copy(&(self.config.main_segment_path), &new_segment_file_name)?;
         // create new Segment Struct
         let new_segment_struct = Segment {
