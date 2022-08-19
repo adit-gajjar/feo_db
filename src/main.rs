@@ -9,10 +9,10 @@ use std::fmt;
 use std::io::prelude::*;
 use serde_json::json;
 use std::path::Path;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::io::stdin;
 
-const MAX_SEGMENT_SIZE: u64 = 10000 * 64;
+const MAX_SEGMENT_SIZE: u64 = 100 * 64;
 const MEM_TABLE_MAX_SIZE: u64 = 1000;
 
 struct Config {
@@ -66,6 +66,7 @@ fn create_index_from_segment(segment_file_path: String) -> Result<(u64, BTreeMap
 }
 
 impl DB {
+
     fn insert(&mut self, key: u64, value: String) -> Result<(), Error> {
         let value_len = value.len() as u64;
         print!("value_len: {}\n", value_len);
@@ -80,6 +81,10 @@ impl DB {
     fn write_mem_table_to_segment(&mut self) -> Result<(), Error> {
         // for each key in the mem_table write it to the main segment.
         // update the index of that segment as well.
+        if (self.mem_table_size + self.main_segment_size > MAX_SEGMENT_SIZE) {
+            self.new_main_segment()?;
+        }
+
         let mut main_segment = OpenOptions::new()
         .write(true)
         .append(true)
@@ -163,7 +168,8 @@ impl DB {
 
     fn new_main_segment(&mut self) -> Result<(), Error> {
         // clone current main_segment into new file.
-        let new_segment_file_name = format!("segment_{}.db", self.segments.len());
+        let time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        let new_segment_file_name = format!("./segments/segment_{}.db", time.as_secs());
         let mut new_segment_file = File::create(&new_segment_file_name)?;
         copy(&(self.config.main_segment_path), &new_segment_file_name)?;
         // create new Segment Struct
