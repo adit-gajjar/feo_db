@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::vec::Vec;
-use std::fs::{File, OpenOptions, copy, remove_file};
+use std::fs::{File, OpenOptions, copy, remove_file, read_dir, metadata};
 use std::io::{Write, Error, SeekFrom};
 use serde_json::Value;
 use std::mem;
@@ -39,7 +39,7 @@ pub struct DB {
 }
 
 
-fn create_index_from_segment(segment_file_path: String) -> Result<(u64, BTreeMap<u64, u64>), Error> {
+fn create_index_from_segment(segment_file_path: &String) -> Result<(u64, BTreeMap<u64, u64>), Error> {
     let mut index = BTreeMap::new();
     let mut segment_file = File::open(&segment_file_path)?;
     let mut buffer = [0; mem::size_of::<u64>()];
@@ -67,6 +67,32 @@ fn create_index_from_segment(segment_file_path: String) -> Result<(u64, BTreeMap
 }
 
 impl DB {
+    pub fn new() -> Result<DB, Error> {
+
+        let mut db = DB {
+            index: BTreeMap::new(),
+             mem_table: BTreeMap::new(),
+            config: Config {
+                main_segment_path: String::from("main_segment.db"),
+                mem_table_max_size: MEM_TABLE_MAX_SIZE
+            },
+            main_segment_size: 0,
+            mem_table_size: 0,
+            segments: Vec::new()
+        };
+
+        // if main_segment.db exists re-create the index and main_segment_size
+        if Path::new("main_segment.db").exists() {
+            // try read the key and the size of the item
+            let (main_segment_size, index) = create_index_from_segment(&String::from("main_segment.db"))?;
+            db.index = index;
+            db.main_segment_size = main_segment_size;
+        }
+        // recover the rest of the segments.
+        db.deserialize_segments()?;
+        
+        Ok(db)
+    }
 
     pub fn insert(&mut self, key: u64, value: String) -> Result<(), Error> {
         let value_len = value.len() as u64;
@@ -76,6 +102,34 @@ impl DB {
         self.mem_table.insert(key, value);
         self.mem_table_size += value_len;
         Ok(())
+    }
+
+    pub fn find_by_id(&self, key:&u64) -> Result<Value, Error> {
+        // first check mem_table
+        let value = self.mem_table.get(key);
+        if let Some(value) = value {
+            let json_value = serde_json::from_str(value)?;
+            return Ok(json_value);
+        }
+
+        // look up byte index in index in main segment
+        let byte_index = self.index.get(key);
+
+        if let Some(byte_index) = byte_index {
+            let json_value = self.read_document_from_segment(&self.config.main_segment_path, *byte_index)?;
+            return Ok(json_value);
+        }
+
+        // search in reverse as last added segment has more recent data.
+        for segment in self.segments.iter().rev() {
+            let byte_index = self.index.get(key);
+            if let Some(byte_index) = byte_index {
+                let json_value = self.read_document_from_segment(&segment.segment_path, *byte_index)?;
+                return Ok(json_value);
+            }
+        }
+
+        return Ok(json!(null));
     }
 
     fn write_mem_table_to_segment(&mut self) -> Result<(), Error> {
@@ -113,33 +167,6 @@ impl DB {
         self.mem_table.clear();
         self.mem_table_size = 0;
         Ok(())
-    }
-
-    pub fn find_by_id(&self, key:&u64) -> Result<Value, Error> {
-        // first check mem_table
-        let value = self.mem_table.get(key);
-        if let Some(value) = value {
-            let json_value = serde_json::from_str(value)?;
-            return Ok(json_value);
-        }
-
-        // look up byte index in index in main segment
-        let byte_index = self.index.get(key);
-
-        if let Some(byte_index) = byte_index {
-            let json_value = self.read_document_from_segment(&self.config.main_segment_path, *byte_index)?;
-            return Ok(json_value);
-        }
-
-        for segment in self.segments.iter() {
-            let byte_index = self.index.get(key);
-            if let Some(byte_index) = byte_index {
-                let json_value = self.read_document_from_segment(&segment.segment_path, *byte_index)?;
-                return Ok(json_value);
-            }
-        }
-
-        return Ok(json!(null));
     }
 
     fn read_document_from_segment(&self, segment_path: &String, byte_index: u64) -> Result<Value, Error> {
@@ -188,39 +215,28 @@ impl DB {
         Ok(())
     }
 
-    fn de_serialize_segments(&mut self) -> Result<(), Error> {
-        Ok(())
-    }
+    fn deserialize_segments(&mut self) -> Result<(), Error> {
+        // read the segments dir.
+        // recover all the segments and then sort them by time created.
+        let paths = read_dir("./segments/").unwrap();
 
-    pub fn new() -> Result<DB, Error> {
-        // if main_segment.db exists re-create the index and main_segment_size
-        if Path::new("main_segment.db").exists() {
-            // try read the key and the size of the item
-            let (main_segment_size, index) = create_index_from_segment(String::from("main_segment.db"))?;
-            return Ok(DB {
+        for path in paths {
+            let path_string = path.unwrap().path().display().to_string();
+            // recover the segment index.
+            let (size, index) = create_index_from_segment(&path_string)?;
+            let date_created = metadata(&path_string)?.created()?;
+            let segment = Segment {
+                segment_path: path_string.clone(),
                 index: index,
-                mem_table: BTreeMap::new(),
-                config: Config {
-                    main_segment_path: String::from("main_segment.db"),
-                    mem_table_max_size: MEM_TABLE_MAX_SIZE
-                },
-                main_segment_size: main_segment_size,
-                mem_table_size: 0,
-                segments: Vec::new(),
-            });
+                segment_size: size,
+                disk_time: date_created
+            };
+            self.segments.push(segment);
         }
-        
-        Ok(DB {
-            index: BTreeMap::new(),
-            mem_table: BTreeMap::new(),
-            config: Config {
-                main_segment_path: String::from("main_segment.db"),
-                mem_table_max_size: MEM_TABLE_MAX_SIZE
-            },
-            main_segment_size: 0,
-            mem_table_size: 0,
-            segments: Vec::new(),
-        })
+
+        self.segments.sort_by(|a, b| (a.disk_time.partial_cmp(&b.disk_time).unwrap()));
+
+        Ok(())
     }
 
     // Size Tiered Compaction Strategy (STCS)
@@ -264,5 +280,5 @@ impl DB {
 
         Ok(())
     }
-
 }
+
