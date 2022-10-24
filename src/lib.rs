@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{HashSet, BTreeMap};
 use std::vec::Vec;
 use std::fs::{File, OpenOptions, copy, remove_file, read_dir, metadata};
 use std::io::{Write, Error, SeekFrom};
@@ -10,7 +10,7 @@ use serde_json::json;
 use std::path::Path;
 use std::time::{SystemTime};
 use uuid::Uuid;
-
+use std::cmp;
 
 const MAX_SEGMENT_SIZE: u64 = 100000 * 64;
 const MEM_TABLE_MAX_SIZE: u64 = 1000 * 64;
@@ -28,12 +28,10 @@ struct Segment {
 }
 
 pub struct DB {
-    // key to byte index
     mem_table: BTreeMap<u64, String>,
     mem_table_size: u64,
-    index: BTreeMap<u64, u64>,
     config: Config,
-    main_segment_size: u64,
+    main_segment: Segment,
     segments: Vec<Segment>
 }
 
@@ -69,23 +67,26 @@ impl DB {
     pub fn new() -> Result<DB, Error> {
 
         let mut db = DB {
-            index: BTreeMap::new(),
-             mem_table: BTreeMap::new(),
+            mem_table: BTreeMap::new(),
             config: Config {
                 main_segment_path: String::from("main_segment.db"),
                 mem_table_max_size: MEM_TABLE_MAX_SIZE
             },
-            main_segment_size: 0,
+            main_segment: Segment {
+                index: BTreeMap::new(),
+                segment_size: 0,
+                segment_path: String::from("main_segment.db"),
+                disk_time: SystemTime::now(), 
+            },
             mem_table_size: 0,
             segments: Vec::new()
         };
 
-        // if main_segment.db exists re-create the index and main_segment_size
         if Path::new("main_segment.db").exists() {
-            // try read the key and the size of the item
+            // re-create the index and main_segment_size
             let (main_segment_size, index) = create_index_from_segment(&String::from("main_segment.db"))?;
-            db.index = index;
-            db.main_segment_size = main_segment_size;
+            db.main_segment.index = index;
+            db.main_segment.segment_size = main_segment_size;
         }
         // recover the rest of the segments.
         db.deserialize_segments()?;
@@ -112,10 +113,10 @@ impl DB {
         }
 
         // look up byte index in index in main segment
-        let byte_index = self.index.get(key);
+        let byte_index = self.main_segment.index.get(key);
 
         if let Some(byte_index) = byte_index {
-            let json_value = self.read_document_from_segment(&self.config.main_segment_path, *byte_index)?;
+            let json_value = self.read_document_from_segment(&self.main_segment, *byte_index)?;
             return Ok(json_value);
         }
 
@@ -123,7 +124,7 @@ impl DB {
         for segment in self.segments.iter().rev() {
             let byte_index = segment.index.get(key);
             if let Some(byte_index) = byte_index {
-                let json_value = self.read_document_from_segment(&segment.segment_path, *byte_index)?;
+                let json_value = self.read_document_from_segment(&segment, *byte_index)?;
                 return Ok(json_value);
             }
         }
@@ -131,10 +132,44 @@ impl DB {
         Ok(json!(null))
     }
 
+    // single threaded range query
+    fn find_by_id_range(&self, start_key: &u64, end_key: &u64) -> Result<Vec<Value>, Error> {
+        let mut results = Vec::new();
+        let mut seen_ids = HashSet::new();
+        let (main_segment_last_key, _) = self.mem_table.iter().last().unwrap();
+        // TODO: if there not intersection between target range and segment range skip
+        if start_key <= main_segment_last_key {
+            for key in *start_key..*end_key+1 {
+                if self.mem_table.contains_key(&key) {
+                    results.push(json!(self.mem_table.get(&key).unwrap()));
+                    seen_ids.insert(key);
+                }
+            }
+        }
+
+        // for all the segments in reverse order do the same.
+        for segment in self.segments.iter().rev() {
+            let (segment_first_key, _) = self.mem_table.iter().next().unwrap();
+            let (segment_last_key, _) = self.mem_table.iter().last().unwrap();
+            if start_key <= segment_last_key {
+                for key in cmp::max(*start_key, *segment_first_key) ..(cmp::max(*end_key, *segment_last_key)+1)  {
+                    if segment.index.contains_key(&key) && !seen_ids.contains(&key) {
+                        let byte_index = segment.index.get(&key).unwrap();
+                        let json_value = self.read_document_from_segment(&segment, *byte_index)?;
+                        results.push(json_value);
+                        seen_ids.insert(key);
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
     fn write_mem_table_to_segment(&mut self) -> Result<(), Error> {
         // for each key in the mem_table write it to the main segment.
         // update the index of that segment as well.
-        if self.mem_table_size + self.main_segment_size > MAX_SEGMENT_SIZE {
+        if self.mem_table_size + self.main_segment.segment_size > MAX_SEGMENT_SIZE {
             self.new_main_segment()?;
         }
 
@@ -144,7 +179,7 @@ impl DB {
         .open(&(self.config.main_segment_path))
         .unwrap();
         let mut byte_index_updates = Vec::new();
-        main_segment.seek(SeekFrom::Start(self.main_segment_size))?;
+        main_segment.seek(SeekFrom::Start(self.main_segment.segment_size))?;
         // TODO: batch all these writes and write it as one chunk
         for (key, value) in self.mem_table.iter() {
             // write to new segment
@@ -153,13 +188,13 @@ impl DB {
             main_segment.write(&size_in_bytes.to_ne_bytes())?;
             write!(main_segment, "{}",  value)?;
             // update index
-            byte_index_updates.push((*key, self.main_segment_size));
-            self.main_segment_size += (2 * mem::size_of::<u64> as u64) + size_in_bytes;
-            byte_index_updates.push((*key, self.main_segment_size));
+            byte_index_updates.push((*key, self.main_segment.segment_size));
+            self.main_segment.segment_size += (2 * mem::size_of::<u64> as u64) + size_in_bytes;
+            byte_index_updates.push((*key, self.main_segment.segment_size));
         }
 
         for (key, byte_index) in byte_index_updates.iter() {
-            self.index.insert(*key, *byte_index);
+            self.main_segment.index.insert(*key, *byte_index);
         }
 
         self.mem_table.clear();
@@ -167,9 +202,9 @@ impl DB {
         Ok(())
     }
 
-    fn read_document_from_segment(&self, segment_path: &String, byte_index: u64) -> Result<Value, Error> {
+    fn read_document_from_segment(&self, segment: &Segment, byte_index: u64) -> Result<Value, Error> {
         // file seek and return value
-        let mut segment_file = File::open(segment_path)?;
+        let mut segment_file = File::open(&segment.segment_path)?;
         let mut buffer = [0; mem::size_of::<u64>()];
 
         segment_file.seek(SeekFrom::Start(byte_index + 8))?;
@@ -200,16 +235,16 @@ impl DB {
         // create new Segment Struct
         let new_segment_struct = Segment {
             segment_path: String::from(new_segment_file_name),
-            index: self.index.clone(),
-            segment_size: self.main_segment_size,
+            index: self.main_segment.index.clone(),
+            segment_size: self.main_segment.segment_size,
             disk_time: SystemTime::now()
         };
         // add new segment struct to vec
         self.segments.push(new_segment_struct);
         // clear current index and main_segment.
-        self.index.clear();
+        self.main_segment.index.clear();
+        self.main_segment.segment_size = 0;
         File::create(&(self.config.main_segment_path))?;
-
         Ok(())
     }
 
