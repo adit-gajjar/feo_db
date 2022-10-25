@@ -152,7 +152,7 @@ impl DB {
             let (segment_first_key, _) = self.mem_table.iter().next().unwrap();
             let (segment_last_key, _) = self.mem_table.iter().last().unwrap();
             if start_key <= segment_last_key {
-                for key in cmp::max(*start_key, *segment_first_key) ..(cmp::max(*end_key, *segment_last_key)+1)  {
+                for key in cmp::max(*start_key, *segment_first_key) ..(cmp::min(*end_key, *segment_last_key)+1)  {
                     if segment.index.contains_key(&key) && !seen_ids.contains(&key) {
                         let byte_index = segment.index.get(&key).unwrap();
                         let json_value = self.read_document_from_segment(&segment, *byte_index)?;
