@@ -14,9 +14,9 @@ use std::cmp;
 
 const MAX_SEGMENT_SIZE: u64 = 100000 * 64;
 const MEM_TABLE_MAX_SIZE: u64 = 1000 * 64;
+const MAIN_SEGMENT_FILE_NAME: &str = "main_segment.db";
 
 struct Config {
-    main_segment_path: String,
     mem_table_max_size: u64
 }
 
@@ -69,22 +69,21 @@ impl DB {
         let mut db = DB {
             mem_table: BTreeMap::new(),
             config: Config {
-                main_segment_path: String::from("main_segment.db"),
                 mem_table_max_size: MEM_TABLE_MAX_SIZE
             },
             main_segment: Segment {
                 index: BTreeMap::new(),
                 segment_size: 0,
-                segment_path: String::from("main_segment.db"),
+                segment_path: MAIN_SEGMENT_FILE_NAME.to_string(),
                 disk_time: SystemTime::now(), 
             },
             mem_table_size: 0,
             segments: Vec::new()
         };
 
-        if Path::new("main_segment.db").exists() {
+        if Path::new(&db.main_segment.segment_path).exists() {
             // re-create the index and main_segment_size
-            let (main_segment_size, index) = create_index_from_segment(&String::from("main_segment.db"))?;
+            let (main_segment_size, index) = create_index_from_segment(&db.main_segment.segment_path)?;
             db.main_segment.index = index;
             db.main_segment.segment_size = main_segment_size;
         }
@@ -176,7 +175,7 @@ impl DB {
         let mut main_segment = OpenOptions::new()
         .write(true)
         .append(true)
-        .open(&(self.config.main_segment_path))
+        .open(&self.main_segment.segment_path)
         .unwrap();
         let mut byte_index_updates = Vec::new();
         main_segment.seek(SeekFrom::Start(self.main_segment.segment_size))?;
@@ -231,7 +230,7 @@ impl DB {
         let id = Uuid::new_v4();
         let new_segment_file_name = format!("./segments/segment_{}.db", id);
         File::create(&new_segment_file_name)?;
-        copy(&(self.config.main_segment_path), &new_segment_file_name)?;
+        copy(&self.main_segment.segment_path, &new_segment_file_name)?;
         // create new Segment Struct
         let new_segment_struct = Segment {
             segment_path: String::from(new_segment_file_name),
@@ -244,7 +243,7 @@ impl DB {
         // clear current index and main_segment.
         self.main_segment.index.clear();
         self.main_segment.segment_size = 0;
-        File::create(&(self.config.main_segment_path))?;
+        File::create(&self.main_segment.segment_path)?;
         Ok(())
     }
 
@@ -275,7 +274,7 @@ impl DB {
     // Size Tiered Compaction Strategy (STCS)
     fn compact_segment(&self, segment: &mut Segment) -> Result<(), Error> {
         // open of file to read the json values.
-        let mut curr_segment = File::open(&(self.config.main_segment_path))?;
+        let mut curr_segment = File::open(&self.main_segment.segment_path)?;
         let mut bytes_written: u64 = 0;
         // temp file to write to.
         let new_segment_file_name = "temp_compaction_segment.db";
@@ -283,7 +282,7 @@ impl DB {
         let mut new_segment_file = OpenOptions::new()
             .write(true)
             .append(true)
-            .open(&(self.config.main_segment_path))
+            .open(&self.main_segment.segment_path)
             .unwrap();
         let mut byte_index_updates = Vec::new();
         for (key, value) in segment.index.iter() {
