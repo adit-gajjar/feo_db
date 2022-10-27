@@ -16,9 +16,18 @@ const DEFAULT_MAX_SEGMENT_SIZE: u64 = 100000 * 64;
 const DEFAULT_MEM_TABLE_MAX_SIZE: u64 = 1000 * 64;
 const MAIN_SEGMENT_FILE_NAME: &str = "main_segment.db";
 
-struct Config {
+pub struct Config {
     mem_table_max_size: u64,
     max_segment_size: u64,
+}
+
+impl Config {
+    fn default() -> Config {
+        Config {
+            mem_table_max_size: DEFAULT_MEM_TABLE_MAX_SIZE,
+            max_segment_size: DEFAULT_MAX_SEGMENT_SIZE
+        }
+    }
 }
 
 struct Segment {
@@ -69,10 +78,7 @@ impl DB {
 
         let mut db = DB {
             mem_table: BTreeMap::new(),
-            config: Config {
-                mem_table_max_size: DEFAULT_MEM_TABLE_MAX_SIZE,
-                max_segment_size: DEFAULT_MAX_SEGMENT_SIZE
-            },
+            config: Config::default(),
             main_segment: Segment {
                 index: BTreeMap::new(),
                 segment_size: 0,
@@ -92,6 +98,12 @@ impl DB {
         // recover the rest of the segments.
         db.deserialize_segments()?;
 
+        Ok(db)
+    }
+
+    pub fn create_with_config(config: Config) -> Result<DB, Error> {
+        let mut db = DB::new()?;
+        db.config = config;
         Ok(db)
     }
 
