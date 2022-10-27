@@ -12,12 +12,13 @@ use std::time::{SystemTime};
 use uuid::Uuid;
 use std::cmp;
 
-const MAX_SEGMENT_SIZE: u64 = 100000 * 64;
-const MEM_TABLE_MAX_SIZE: u64 = 1000 * 64;
+const DEFAULT_MAX_SEGMENT_SIZE: u64 = 100000 * 64;
+const DEFAULT_MEM_TABLE_MAX_SIZE: u64 = 1000 * 64;
 const MAIN_SEGMENT_FILE_NAME: &str = "main_segment.db";
 
 struct Config {
-    mem_table_max_size: u64
+    mem_table_max_size: u64,
+    max_segment_size: u64,
 }
 
 struct Segment {
@@ -69,7 +70,8 @@ impl DB {
         let mut db = DB {
             mem_table: BTreeMap::new(),
             config: Config {
-                mem_table_max_size: MEM_TABLE_MAX_SIZE
+                mem_table_max_size: DEFAULT_MEM_TABLE_MAX_SIZE,
+                max_segment_size: DEFAULT_MAX_SEGMENT_SIZE
             },
             main_segment: Segment {
                 index: BTreeMap::new(),
@@ -95,7 +97,7 @@ impl DB {
 
     pub fn insert(&mut self, key: u64, value: String) -> Result<(), Error> {
         let value_len = value.len() as u64;
-        if value_len + self.mem_table_size > MEM_TABLE_MAX_SIZE {
+        if value_len + self.mem_table_size > self.config.mem_table_max_size {
             self.write_mem_table_to_segment()?;
         }
         self.mem_table.insert(key, value);
@@ -168,7 +170,7 @@ impl DB {
     fn write_mem_table_to_segment(&mut self) -> Result<(), Error> {
         // for each key in the mem_table write it to the main segment.
         // update the index of that segment as well.
-        if self.mem_table_size + self.main_segment.segment_size > MAX_SEGMENT_SIZE {
+        if self.mem_table_size + self.main_segment.segment_size > self.config.max_segment_size {
             self.new_main_segment()?;
         }
 
