@@ -9,8 +9,7 @@ use std::io::Error;
 fn basic_find_by_id() -> Result<(), Error> {
     let db = common::setup_db()?;
     let document = db.find_by_id(&5)?;
-    // assert_eq!(*document.get("id").unwrap(), json!(5));
-    assert_eq!(1, 1);
+    assert_eq!(*document.get("id").unwrap(), json!(5));
     Ok(())
 }
 

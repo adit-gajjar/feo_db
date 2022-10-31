@@ -226,7 +226,7 @@ impl DB {
             let json_value : Value = serde_json::from_str(stringified_json)?;
             // for debug.
             print!("{}", json_value);
-            return Ok(json!(null));
+            return Ok(json_value);
         }
 
         return Ok(json!(null));
