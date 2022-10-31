@@ -17,8 +17,8 @@ const DEFAULT_MEM_TABLE_MAX_SIZE: u64 = 1000 * 64;
 const MAIN_SEGMENT_FILE_NAME: &str = "main_segment.db";
 
 pub struct Config {
-    mem_table_max_size: u64,
-    max_segment_size: u64,
+    pub mem_table_max_size: u64,
+    pub max_segment_size: u64,
 }
 
 impl Config {
@@ -44,7 +44,6 @@ pub struct DB {
     main_segment: Segment,
     segments: Vec<Segment>
 }
-
 
 fn create_index_from_segment(segment_file_path: &String) -> Result<(u64, BTreeMap<u64, u64>), Error> {
     let mut index = BTreeMap::new();
@@ -127,9 +126,8 @@ impl DB {
 
         // look up byte index in index in main segment
         let byte_index = self.main_segment.index.get(key);
-
         if let Some(byte_index) = byte_index {
-            let json_value = self.read_document_from_segment(&self.main_segment, *byte_index)?;
+            let json_value = self.read_document_from_segment(&(self.main_segment), *byte_index)?;
             return Ok(json_value);
         }
 
@@ -191,7 +189,7 @@ impl DB {
         .append(true)
         .open(&self.main_segment.segment_path)
         .unwrap();
-        let mut byte_index_updates = Vec::new();
+
         main_segment.seek(SeekFrom::Start(self.main_segment.segment_size))?;
         // TODO: batch all these writes and write it as one chunk
         for (key, value) in self.mem_table.iter() {
@@ -201,13 +199,8 @@ impl DB {
             main_segment.write(&size_in_bytes.to_ne_bytes())?;
             write!(main_segment, "{}",  value)?;
             // update index
-            byte_index_updates.push((*key, self.main_segment.segment_size));
-            self.main_segment.segment_size += (2 * mem::size_of::<u64> as u64) + size_in_bytes;
-            byte_index_updates.push((*key, self.main_segment.segment_size));
-        }
-
-        for (key, byte_index) in byte_index_updates.iter() {
-            self.main_segment.index.insert(*key, *byte_index);
+            self.main_segment.index.insert(*key, self.main_segment.segment_size);
+            self.main_segment.segment_size += (2 * 8) + size_in_bytes;
         }
 
         self.mem_table.clear();
@@ -228,12 +221,12 @@ impl DB {
         let mut value_buffer = vec![0_u8; size_of_json as usize];
         segment_file.read(&mut value_buffer)?;
         let stringified_json = str::from_utf8(&value_buffer);
-        // return JSON value
+        // // return JSON value
         if let Ok(stringified_json) = stringified_json {
             let json_value : Value = serde_json::from_str(stringified_json)?;
             // for debug.
             print!("{}", json_value);
-            return Ok(json_value);
+            return Ok(json!(null));
         }
 
         return Ok(json!(null));
