@@ -30,6 +30,7 @@ impl Config {
     }
 }
 
+#[derive(Clone)]
 struct Segment {
     segment_path: String,
     index: BTreeMap<u64, u64>,
@@ -144,11 +145,11 @@ impl DB {
     }
 
     // single threaded range query
-    fn find_by_id_range(&self, start_key: &u64, end_key: &u64) -> Result<Vec<Value>, Error> {
+    pub fn find_by_id_range(&self, start_key: &u64, end_key: &u64) -> Result<Vec<Value>, Error> {
         let mut results = Vec::new();
         let mut seen_ids = HashSet::new();
         let (main_segment_last_key, _) = self.mem_table.iter().last().unwrap();
-        // TODO: if there not intersection between target range and segment range skip
+
         if start_key <= main_segment_last_key {
             for key in *start_key..*end_key+1 {
                 if self.mem_table.contains_key(&key) {
@@ -157,11 +158,13 @@ impl DB {
                 }
             }
         }
-
+        // check main segment
+        let mut segments = self.segments.clone();
+        segments.push(self.main_segment.clone());
         // for all the segments in reverse order do the same.
-        for segment in self.segments.iter().rev() {
-            let (segment_first_key, _) = self.mem_table.iter().next().unwrap();
-            let (segment_last_key, _) = self.mem_table.iter().last().unwrap();
+        for segment in segments.iter().rev() {
+            let (segment_first_key, _) = segment.index.iter().next().unwrap();
+            let (segment_last_key, _) = segment.index.iter().last().unwrap();
             if start_key <= segment_last_key {
                 for key in cmp::max(*start_key, *segment_first_key) ..(cmp::min(*end_key, *segment_last_key)+1)  {
                     if segment.index.contains_key(&key) && !seen_ids.contains(&key) {

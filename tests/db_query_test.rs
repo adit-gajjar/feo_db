@@ -1,9 +1,9 @@
-// CURRENT_TASK: have a function that sets up the DB with a config that makes testing easy.
 mod common;
 
 use feoDB::DB;
 use serde_json::{json, Value};
 use std::io::Error;
+use std::vec::Vec;
 
 #[test]
 fn basic_find_by_id() -> Result<(), Error> {
@@ -13,10 +13,10 @@ fn basic_find_by_id() -> Result<(), Error> {
     Ok(())
 }
 
-
-// #[test]
-// fn basic_range_query() -> Result<(), Error> {
-//     let db = common::setup_db()?;
-
-//     Ok(())
-// }
+#[test]
+fn basic_find_by_range_id() -> Result<(), Error> {
+    let db = common::setup_db()?;
+    let documents = db.find_by_id_range(&11, &100)?;
+    assert_eq!(documents.len(), 90);
+    Ok(())
+}
